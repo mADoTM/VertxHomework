@@ -41,6 +41,7 @@ public class User extends AbstractVerticle {
 
     private void leaveClan() {
         eventBus.send(clan + ".leave", id);
+        clan = null;
     }
 
     private void sendRandomClanInvite() {
@@ -61,6 +62,13 @@ public class User extends AbstractVerticle {
             vertx.cancelTimer(inviteSender);
             vertx.setPeriodic(1000, timer -> sendCongratulations());
             receiveCongratulations();
+            subscribeSpaceMessage();
+        });
+    }
+
+    private void subscribeSpaceMessage() {
+        eventBus.consumer(clan + ".users_space", handler -> {
+            System.out.println(handler.body());
         });
     }
 
@@ -71,7 +79,7 @@ public class User extends AbstractVerticle {
             final var randomUserIndex = random.nextInt(users.size());
             final var randomUserId = users.get(randomUserIndex);
 
-            JsonObject object = new JsonObject();
+            final var object = new JsonObject();
             object.put("from", id);
             object.put("message", "I am the best player in this clan!!!!");
 

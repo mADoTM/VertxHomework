@@ -26,23 +26,19 @@ public class Moderator extends AbstractVerticle {
     @Override
     public void start(Promise<Void> startPromise) {
         eventBus = vertx.eventBus();
-        failDeployIfNoSpaceForNewModerator(startPromise);
-
-        kickUser();
-
-        InviteClanMsg.subscribeInviteToModerator(clanName, eventBus, this::inviteHandler);
-
-        InactiveClanMsg.subscribe(clanName, eventBus, handler -> {
-            System.out.println("should undeploy");
-            System.exit(0);
-        });
-    }
-
-    private void kickUser() {
-        eventBus.consumer(clanName + ".leave", handler -> {
-            String userId = handler.body().toString();
-            System.out.println(clanName + " " + userId);
-            removeUserFromClan(userId);
+        failDeployIfNoSpaceForNewModerator().onComplete(asyncResult -> {
+            if (asyncResult.succeeded()) {
+                CompositeFuture result = asyncResult.result();
+                long maxCount = result.resultAt(0);
+                long currentCount = result.resultAt(1);
+                if (currentCount < maxCount) {
+                    getStartCompositeFuture().onComplete(handler -> {
+                        startPromise.complete();
+                    });
+                } else {
+                    startPromise.fail("There is no space for moderators in clan " + clanName);
+                }
+            }
         });
     }
 
@@ -51,18 +47,43 @@ public class Moderator extends AbstractVerticle {
         getCurrentModeratorsCounter().result().decrementAndGet();
     }
 
+    private CompositeFuture getStartCompositeFuture() {
+        return CompositeFuture.all(getCurrentModeratorsCounter().result().incrementAndGet(),
+                Future.future(promise -> {
+                    subscribeOnLeaveMsg();
+                    subscribeSpaceMessage();
+
+                    InviteClanMsg.subscribeInviteToModerator(clanName, eventBus, this::inviteHandler);
+
+                    InactiveClanMsg.subscribe(clanName, eventBus, handler -> {
+                        System.out.println("should undeploy");
+                        System.exit(0);
+                    });
+                    promise.complete();
+                }));
+    }
+
+    private void subscribeOnLeaveMsg() {
+        eventBus.consumer(clanName + ".leave", handler -> {
+            final var userId = handler.body().toString();
+            System.out.println(clanName + " " + userId);
+            removeUserFromClan(userId);
+        });
+    }
+
     private void inviteHandler(Message<String> handler) {
         CompositeFuture.all(getClanMaxUsersCount(), getCurrentUsersInClan())
                 .onComplete(asyncResult -> {
                     if (asyncResult.succeeded()) {
-                        CompositeFuture result = asyncResult.result();
+                        final var result = asyncResult.result();
                         long maxCount = result.resultAt(0);
                         int currentCount = result.resultAt(1);
                         String userId = handler.body();
 
                         if (currentCount < maxCount) {
-                            inviteUserInClan(userId);
-                            sendInvitedMessage(userId);
+                            inviteUserInClan(userId).onComplete(res -> {
+                                sendInvitedMessage(userId);
+                            });
                         } else {
                             System.out.println(userId + " wants to join us. But we have no space for him :(");
                         }
@@ -70,9 +91,9 @@ public class Moderator extends AbstractVerticle {
                 });
     }
 
-    private void inviteUserInClan(String userId) {
-        getUsersInClan().onComplete(asyncResult -> {
-            var list = asyncResult.result();
+    private Future<List<String>> inviteUserInClan(String userId) {
+        return getUsersInClan().onComplete(asyncResult -> {
+            final var list = asyncResult.result();
             list.add(userId);
             putListInMap(list);
         });
@@ -83,21 +104,14 @@ public class Moderator extends AbstractVerticle {
         new InvitedClanMsg(userId, clanName).send(eventBus);
     }
 
-    private void failDeployIfNoSpaceForNewModerator(Promise<Void> startPromise) {
-        CompositeFuture.all(getMaxModeratorsFuture(), getCurrentModeratorsFuture()).onComplete(asyncResult -> {
-            if (asyncResult.succeeded()) {
-                CompositeFuture result = asyncResult.result();
-                long maxCount = result.resultAt(0);
-                long currentCount = result.resultAt(1);
-                if (currentCount < maxCount) {
-                    startPromise.complete();
-                    getCurrentModeratorsCounter().result().incrementAndGet();
-
-                } else {
-                    startPromise.fail("There is no space for moderators in clan " + clanName);
-                }
-            }
+    private void subscribeSpaceMessage() {
+        eventBus.consumer(clanName + ".moderators_space", handler -> {
+            System.out.println(handler.body());
         });
+    }
+
+    private Future<CompositeFuture> failDeployIfNoSpaceForNewModerator() {
+        return CompositeFuture.all(getMaxModeratorsFuture(), getCurrentModeratorsFuture()).map(Future::result);
     }
 
     private Future<Long> getCurrentModeratorsFuture() {
